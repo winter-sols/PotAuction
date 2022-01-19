@@ -22,9 +22,6 @@ contract PotAuction is ReentrancyGuard{
     /// @dev bidder id
     uint256 public bidderIdTracker;
 
-    /// @dev address of ERC20 token
-    address public token;
-
     /// @dev The initial price
     uint256 startPrice;
 
@@ -37,14 +34,11 @@ contract PotAuction is ReentrancyGuard{
     /// @dev The block number when this contract is deployed
     uint256 startDate;
 
-    /// @dev The number of blocks after startDate for which this auction will be open
-    uint256 endDate;
+    /// @dev Auction period
+    uint256 period;
 
     /// @dev Indicate if this auction has been closed by the seller
     bool isClosedBySeller;
-
-    /// @dev The owner of this auction
-    address owner;
 
     /// @dev The seller of this auction
     address payable public seller;
@@ -58,57 +52,87 @@ contract PotAuction is ReentrancyGuard{
     /// @dev end price: last bidder's current price
     uint256 endPrice;
 
-    event BidPlaced(address, uint, uint);
+    event BidPlaced(address, uint256, uint256);
 
-    event AcutionOpened(uint256);
+    event AcutionOpened(address, uint256);
 
     event AuctionClosed(string);
 
-    event TokenTransferredAndRefunded();
+    event TokenTransferredAndRefunded(address, uint256);
 
     /**
      * @dev constructor
-     * @param _token address of ERC20 token(asset)
      * @param _seller address of seller
-     * @param _totalAmount total number of tokens to be sold
      * @param _startPrice start price
      * @param _reservePrice reserve price
-     * @param _startDate auction start date
-     * @param _endDate auction end date
+     * @param _interval auction period from stat date to end date
      */    
     constructor(
-        address _token,
         address payable _seller,
-        uint256 _totalAmount,
         uint256 _reservePrice,
         uint256 _startPrice,
-        uint256 _startDate,
-        uint256 _endDate
+        uint256 _interval
     ) ReentrancyGuard() {
         startPrice = _startPrice;
         reservePrice = _reservePrice;
-        startDate = _startDate;
-        totalAmount = _totalAmount ;
-        endDate = _endDate;
-        token = _token;
+        startDate = block.timestamp;
+        period = _interval;
         seller = _seller;
-        owner = msg.sender;
         
-        require(endDate > startDate, "POT: invalid endDate");
+        require(seller != address(0), "POT: invalid seller address");
         require(reservePrice > 0, "POT: invalid reserve price");
         require(startPrice > reservePrice, "POT: invalid start price");
-
-        IERC20(_token).safeTransferFrom(msg.sender, address(this), totalAmount);
-
-        emit AcutionOpened(startDate);
+        require(period > 0, "POT: invalid period");
     }
+    
+    /**
+     * @dev open this acution
+     * @param token address of ERC20 token(asset)
+     */
+    function openAuction(address token, uint256 _totalAmount) external {
+        startDate = block.number;
+        totalAmount = _totalAmount;
+        require(msg.sender == seller, "POT: only seller can open auction");
+        require(token != address(0), "POT: invalid token address");
+        require(totalAmount > 0, "POT: invalid amount of assets");
+        require(
+            IERC20(token).balanceOf(msg.sender) >= totalAmount,
+            "POT: not enough balance"
+        );
+
+        uint256 userBalanceBefore = IERC20(token).balanceOf(msg.sender);
+        uint256 serverBalanceBefore = IERC20(token).balanceOf(address(this));
+
+        IERC20(token).safeTransferFrom(msg.sender, address(this), totalAmount);
+
+        uint256 userBalanceAfter = IERC20(token).balanceOf(msg.sender);
+        uint256 serverBalanceAfter = IERC20(token).balanceOf(address(this));
+
+        require(
+            (userBalanceBefore - userBalanceAfter) == totalAmount &&
+            (serverBalanceAfter - serverBalanceBefore) == totalAmount
+        );
+
+        emit AcutionOpened(token, totalAmount);
+    }
+
+    /// @dev close this auction
+    function closeAuction() external {
+        require(msg.sender == seller, "POT: only seller can close auction");
+
+        if(!isOver)
+            isOver = true;
+
+        emit AuctionClosed("POT: auction is closed by seller.");
+    }
+
 
     /// @dev Indicate if this auction is still open or not
     function isClosed() public view returns(bool) {
         if (isOver)
             return true;
 
-        if (block.number >= endDate)
+        if (block.number >= startDate + period)
             return true;
 
         return false;
@@ -139,10 +163,9 @@ contract PotAuction is ReentrancyGuard{
 
     /**
      * @dev Return the current price of the good
-     * @param currentBlock current time
      */
-    function getCurrentPrice(uint256 currentBlock) public view returns(uint256){
-        return getPrice(startPrice, reservePrice, startDate, endDate, currentBlock);
+    function getCurrentPrice() public view returns(uint256){
+        return getPrice(startPrice, reservePrice, startDate, startDate + period, block.number);
     }
 
     /**
@@ -150,12 +173,11 @@ contract PotAuction is ReentrancyGuard{
      * @param bid number of required assets(tokens)
      */
     function makeBid(uint256 bid) payable external {
-        uint256 actualBid;
-        uint256 currentBlock = block.number;
-        uint256 currentPrice = getCurrentPrice(currentBlock);
-
         require(!isClosed(), "POT: auction is closed.");
         require(bid > 0, "POT: zero amount");
+
+        uint256 actualBid;
+        uint256 currentPrice = getCurrentPrice();
         require(msg.value == currentPrice * bid, "POT: invalid payment for the bid");
 
         if (currentPrice < reservePrice) {
@@ -182,22 +204,11 @@ contract PotAuction is ReentrancyGuard{
         }
     }
 
-    /// @dev Terminate this auction
-    function auctionClose() external {
-        if (msg.sender == owner || msg.sender == seller) {
-
-            if(!isOver)
-                isOver = true;
-
-            emit AuctionClosed("POT: auction is closed by seller.");
-        }
-    }
-
     /**
      * @dev refund a bidder after the auction is closed. implement pull over push
      * @param id specific bidder id
      */
-    function transferTokensAndRefund(uint256 id) external nonReentrant {
+    function transferTokensAndRefund(address token, uint256 id) external nonReentrant {
         require(isClosed(), "POT: auction is not closed");
 
         Bidder storage bidder = bidders[id];
@@ -218,24 +229,23 @@ contract PotAuction is ReentrancyGuard{
         bidder.pricePerToken = 0;
         bidder.requiredTokens = 0;
 
-        (bool refunded, ) = payable(recepient).call{value: amount}("");
+        (bool refunded, ) = payable(recepient).call{value: refunds}("");
 
         uint256 userBalanceBefore = IERC20(token).balanceOf(recepient);
         uint256 serverBalanceBefore = IERC20(token).balanceOf(address(this));
-
+        
         IERC20(token).safeTransfer(recepient, amount);
 
         uint256 userBalanceAfter = IERC20(token).balanceOf(recepient);
         uint256 serverBalanceAfter = IERC20(token).balanceOf(address(this));
 
-        require(refunded,"POS: not refunded");
+        require(refunded);
         require(
-            (userBalanceBefore - userBalanceAfter) == amount &&
-            (serverBalanceBefore - serverBalanceAfter) == amount,
-            "POS: token was not transferred."
+            (userBalanceAfter - userBalanceBefore) == amount &&
+            (serverBalanceBefore - serverBalanceAfter) == amount
         );
 
-        emit TokenTransferredAndRefunded();
+        emit TokenTransferredAndRefunded(token, id);
     }
 
 }
