@@ -181,4 +181,61 @@ contract PotAuction is ReentrancyGuard{
             emit BidPlaced(msg.sender, currentPrice, msg.value);
         }
     }
+
+    /// @dev Terminate this auction
+    function auctionClose() external {
+        if (msg.sender == owner || msg.sender == seller) {
+
+            if(!isOver)
+                isOver = true;
+
+            emit AuctionClosed("POT: auction is closed by seller.");
+        }
+    }
+
+    /**
+     * @dev refund a bidder after the auction is closed. implement pull over push
+     * @param id specific bidder id
+     */
+    function transferTokensAndRefund(uint256 id) external nonReentrant {
+        require(isClosed(), "POT: auction is not closed");
+
+        Bidder storage bidder = bidders[id];
+        require(msg.sender == bidder.bidderAddr, "POT: invalid bidder");
+
+        address recepient = bidder.bidderAddr;
+        uint256 amount = bidder.requiredTokens;
+        uint256 refunds;
+        
+        if (id == bidderIdTracker - 1) {
+            refunds = bidder.totalBidPrice - bidder.pricePerToken * bidder.requiredTokens;
+        } else {
+            refunds = (bidder.pricePerToken - endPrice) * bidder.requiredTokens;
+        }
+
+        bidder.bidderAddr = address(0);
+        bidder.totalBidPrice = 0;
+        bidder.pricePerToken = 0;
+        bidder.requiredTokens = 0;
+
+        (bool refunded, ) = payable(recepient).call{value: amount}("");
+
+        uint256 userBalanceBefore = IERC20(token).balanceOf(recepient);
+        uint256 serverBalanceBefore = IERC20(token).balanceOf(address(this));
+
+        IERC20(token).safeTransfer(recepient, amount);
+
+        uint256 userBalanceAfter = IERC20(token).balanceOf(recepient);
+        uint256 serverBalanceAfter = IERC20(token).balanceOf(address(this));
+
+        require(refunded,"POS: not refunded");
+        require(
+            (userBalanceBefore - userBalanceAfter) == amount &&
+            (serverBalanceBefore - serverBalanceAfter) == amount,
+            "POS: token was not transferred."
+        );
+
+        emit TokenTransferredAndRefunded();
+    }
+
 }
