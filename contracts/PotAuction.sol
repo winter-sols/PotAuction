@@ -144,4 +144,41 @@ contract PotAuction is ReentrancyGuard{
     function getCurrentPrice(uint256 currentBlock) public view returns(uint256){
         return getPrice(startPrice, reservePrice, startDate, endDate, currentBlock);
     }
+
+    /**
+     * @dev Make a bid request
+     * @param bid number of required assets(tokens)
+     */
+    function makeBid(uint256 bid) payable external {
+        uint256 actualBid;
+        uint256 currentBlock = block.number;
+        uint256 currentPrice = getCurrentPrice(currentBlock);
+
+        require(!isClosed(), "POT: auction is closed.");
+        require(bid > 0, "POT: zero amount");
+        require(msg.value == currentPrice * bid, "POT: invalid payment for the bid");
+
+        if (currentPrice < reservePrice) {
+            revert("POT: current price is reached to reserve price.");
+        } else {
+            if (reserveAmount + bid >= totalAmount) {
+                actualBid = totalAmount - reserveAmount;
+                endPrice = currentPrice;
+                isOver = true;
+                emit AuctionClosed("POT: all tokens are sold out.");
+            } else {
+                reserveAmount += bid;
+                actualBid = bid;
+            }
+            bidders[bidderIdTracker] = Bidder(
+                msg.sender,
+                msg.value,
+                currentPrice,
+                actualBid
+            );
+            bidderIdTracker += 1;
+
+            emit BidPlaced(msg.sender, currentPrice, msg.value);
+        }
+    }
 }
