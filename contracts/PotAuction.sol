@@ -84,7 +84,9 @@ contract PotAuction is ReentrancyGuard{
         require(startPrice > reservePrice, "POT: invalid start price");
         require(period > 0, "POT: invalid period");
     }
-    
+    /// @dev fallback function
+    fallback () external { } 
+
     /**
      * @dev open this acution
      * @param token address of ERC20 token(asset)
